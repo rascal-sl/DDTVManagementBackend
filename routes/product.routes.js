@@ -7,7 +7,6 @@ const { authorizeRoles } = require('../middleware/role.middleware');
 router.post('/', authenticateToken, authorizeRoles('super_admin'), ctrl.createProduct);
 router.put('/:id', authenticateToken, authorizeRoles('super_admin'), ctrl.updateProduct);
 router.delete('/:id', authenticateToken, authorizeRoles('super_admin'), ctrl.deleteProduct);
-router.post('/topup/:id', authenticateToken, authorizeRoles('super_admin'), ctrl.topUpRechargeProduct);
 
 // All Auth
 router.get('/', authenticateToken, ctrl.getAllProducts);

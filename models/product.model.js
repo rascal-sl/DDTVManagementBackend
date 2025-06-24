@@ -9,7 +9,6 @@ const productSchema = new mongoose.Schema({
     quantity: { type: Number, default: 0 }, // Only for 'normal'
     buyingPrice: { type: Number, required: true },
     sellingPrice: { type: Number, required: true },
-    rechargeBalance: { type: Number, default: 0 }, // Only for 'recharge'
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     createdByName: { type: String, required: true },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

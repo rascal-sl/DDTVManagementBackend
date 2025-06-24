@@ -51,17 +51,3 @@ exports.searchProducts = async (req, res) => {
     res.json(await service.searchProducts(q, type));
 };
 
-exports.topUpRechargeProduct = async (req, res) => {
-    try {
-        const { error } = topUpRechargeValidation.validate(req.body);
-        if (error) return res.status(400).json({ message: error.details[0].message });
-        const prod = await service.topUpRechargeProduct(
-            req.params.id,
-            req.body.topUpValue,
-            req.body.topUpCost,
-            req.user.id,
-            req.user.firstName
-        );
-        res.json({ message: 'Recharge balance topped up', product: prod });
-    } catch (err) { res.status(400).json({ message: err.message }); }
-};
