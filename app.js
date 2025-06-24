@@ -25,9 +25,10 @@ app.use('/api/agents', require('./routes/agent.routes'));
 app.use('/api/products', require('./routes/product.routes'));
 app.use('/api/bills', require('./routes/bill.routes'));
 app.use('/api/repairs', require('./routes/repair.routes'));
-app.use('/api/customers', require('./routes/customerHistory.routes'));
+app.use('/api/customers', require('./routes/customerHistory.routes')); // If specific to /:id/history, else change as suggested
 app.use('/api/expenses', require('./routes/expense.routes'));
 app.use('/api/expense-categories', require('./routes/expenseCategory.routes'));
+app.use('/api/recharge', require('./routes/recharge.routes')); // <-- fixed missing leading '/'
 
 // CRON: 30-min recharge, 9pm daily summary
 cron.schedule('0,30 * * * *', async () => await sendRechargeReport());
