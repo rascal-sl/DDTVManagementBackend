@@ -1,138 +1,183 @@
 const Bill = require('../models/bill.model');
-const Product = require('../models/product.model');
 const Customer = require('../models/customer.model');
-const Agent = require('../models/agent.model');
-const logger = require('../utils/logger');
-const mongoose = require('mongoose');
+const Product = require('../models/product.model');
+const moment = require('moment-timezone');
 
 /**
- * Create a bill with business logic for products and price validation.
+ * Helper: Convert date to Sri Lankan time
  */
-exports.createBill = async (data, user) => {
-    // Validate target
-    let target;
-    if (data.customer) {
-        if (!mongoose.Types.ObjectId.isValid(data.customer.id)) throw new Error('Invalid customer ID');
-        target = await Customer.findById(data.customer.id);
-        if (!target) throw new Error('Customer not found');
-        if (!target.whatsappNumber) throw new Error('Customer WhatsApp number not set');
-    } else if (data.agent) {
-        if (!mongoose.Types.ObjectId.isValid(data.agent.id)) throw new Error('Invalid agent ID');
-        target = await Agent.findById(data.agent.id);
-        if (!target) throw new Error('Agent not found');
-        if (!target.whatsappNumber) throw new Error('Agent WhatsApp number not set');
-    } else {
-        throw new Error('Either customer or agent must be provided');
+const toSLTime = (date) => moment(date).tz('Asia/Colombo').toDate();
+
+/**
+ * Create a bill for normal products, auto-fetch customer, and decrement stock
+ */
+exports.createBill = async (billData, user) => {
+    // Fetch customer
+    const customer = await Customer.findById(billData.customerId);
+    if (!customer) throw new Error('Customer not found');
+
+    // Validate products, check stock, prepare bill product array
+    let totalAmount = 0, profit = 0, productsArray = [];
+    for (const p of billData.products) {
+        const prod = await Product.findById(p.productId);
+        if (!prod) throw new Error(`Product not found: ${p.productId}`);
+        if (prod.productType !== 'normal') throw new Error('Only normal products allowed');
+        if (prod.quantity < p.quantity)
+            throw new Error(`Insufficient stock for product: ${prod.name}`);
+        const itemProfit = (p.billedPrice - prod.buyingPrice) * p.quantity;
+        profit += itemProfit;
+        totalAmount += p.billedPrice * p.quantity;
+        productsArray.push({
+            productId: prod._id,
+            name: prod.name,
+            quantity: p.quantity,
+            billedPrice: p.billedPrice,
+            actualCost: prod.buyingPrice
+        });
+        prod.quantity -= p.quantity;
+        await prod.save();
     }
 
-    // Product checks and updates
-    let totalProfit = 0;
-    for (const item of data.products) {
-        const product = await Product.findById(item.productId);
-        if (!product) throw new Error(`Product not found: ${item.name}`);
-
-        if (product.productType === 'recharge') {
-            const allowedMin = product.sellingPrice - 5;
-            if (item.billedPrice > product.sellingPrice)
-                throw new Error(`Recharge price cannot be increased above Rs. ${product.sellingPrice}`);
-            if (item.billedPrice < allowedMin)
-                throw new Error(`Maximum allowed discount is Rs. 5. You must bill Rs. ${allowedMin} or more`);
-            if (product.rechargeBalance < item.quantity * item.billedPrice)
-                throw new Error('Insufficient recharge balance');
-            product.rechargeBalance -= item.quantity * item.billedPrice;
-        } else if (product.productType === 'normal') {
-            if (product.quantity < item.quantity)
-                throw new Error(`Insufficient quantity for ${product.name}`);
-            if (item.billedPrice !== product.sellingPrice)
-                throw new Error('No override allowed for normal products');
-            product.quantity -= item.quantity;
-        }
-        totalProfit += (item.billedPrice - item.actualCost) * item.quantity;
-        await product.save();
-    }
-
-    const billObj = {
-        ...data,
-        profit: totalProfit,
+    // Store bill with customer snapshot
+    return await Bill.create({
+        customer: {
+            id: customer._id,
+            firstName: customer.firstName,
+            lastName: customer.lastName,
+            phoneNumber: customer.phoneNumber,
+            email: customer.email || '',
+            cardNumber: customer.cardNumber
+        },
+        products: productsArray,
+        totalAmount,
+        profit,
         createdBy: user.id,
         createdByName: user.firstName,
-        updatedBy: user.id,
-        updatedByName: user.firstName
-    };
-
-    const bill = await Bill.create(billObj);
-
-    logger.userAction(`[${new Date().toISOString()}] ACTION: createBill by ${user.role} ${user.firstName} (ID: ${user.id}) - Status: SUCCESS - Bill ID: ${bill._id}`);
-
-    return bill;
+        createdAt: toSLTime(Date.now())
+    });
 };
 
 /**
- * Get all bills for today (admin view)
+ * Fetch all bills (role-based): admins = today, super_admins = all or by date/range
  */
-exports.getTodaysBills = async (user) => {
-    const today = new Date();
-    today.setHours(0,0,0,0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(today.getDate() + 1);
-
-    // Only created today
-    const query = { createdAt: { $gte: today, $lt: tomorrow } };
-    return Bill.find(query).sort({ createdAt: -1 });
-};
-
-/**
- * Super admin: Filter bills
- */
-exports.filterBills = async (query) => {
-    const filter = {};
-    if (query.customer) filter['customer.name'] = { $regex: query.customer, $options: 'i' };
-    if (query.nic) filter['customer.nic'] = query.nic;
-    if (query.cardNumber) filter['customer.cardNumber'] = query.cardNumber;
-    if (query.phone) filter['customer.phone'] = query.phone;
-    if (query.agent) filter['agent.name'] = { $regex: query.agent, $options: 'i' };
-    if (query.product) filter['products.name'] = { $regex: query.product, $options: 'i' };
-    if (query.start && query.end) {
-        filter.createdAt = {
-            $gte: new Date(query.start),
-            $lte: new Date(query.end)
-        };
+exports.getAllBills = async (user, from, to) => {
+    let filter = {};
+    if (user.role === 'admin') {
+        // Only today (SL time)
+        const start = moment().tz('Asia/Colombo').startOf('day');
+        const end = moment().tz('Asia/Colombo').endOf('day');
+        filter.createdAt = { $gte: start.toDate(), $lte: end.toDate() };
+    } else if (user.role === 'super_admin' && (from || to)) {
+        filter.createdAt = {};
+        if (from) filter.createdAt.$gte = moment(from).tz('Asia/Colombo').startOf('day').toDate();
+        if (to) filter.createdAt.$lte = moment(to).tz('Asia/Colombo').endOf('day').toDate();
     }
-    return Bill.find(filter).sort({ createdAt: -1 });
+    return await Bill.find(filter).sort({ createdAt: -1 });
 };
 
 /**
- * Get bill by ID
+ * Get all bills by customer id
+ */
+exports.getBillsByCustomerId = async (customerId) => {
+    return await Bill.find({ "customer.id": customerId }).sort({ createdAt: -1 });
+};
+
+/**
+ * Revenue/profit report for any date range (super admin)
+ */
+exports.getRevenueReport = async (from, to) => {
+    let filter = {};
+    if (from || to) {
+        filter.createdAt = {};
+        if (from) filter.createdAt.$gte = moment(from).tz('Asia/Colombo').startOf('day').toDate();
+        if (to) filter.createdAt.$lte = moment(to).tz('Asia/Colombo').endOf('day').toDate();
+    }
+    const bills = await Bill.find(filter);
+    const totalSales = bills.reduce((sum, b) => sum + b.totalAmount, 0);
+    const totalProfit = bills.reduce((sum, b) => sum + b.profit, 0);
+    return {
+        count: bills.length,
+        totalSales,
+        totalProfit,
+        from: from ? moment(from).format('YYYY-MM-DD') : undefined,
+        to: to ? moment(to).format('YYYY-MM-DD') : undefined
+    };
+};
+
+/**
+ * Get a single bill by its id
  */
 exports.getBillById = async (id) => {
-    if (!mongoose.Types.ObjectId.isValid(id)) throw new Error('Invalid bill ID');
+    return await Bill.findById(id);
+};
+
+/**
+ * Update bill: reverse old stock, apply new stock, recalculate profit/total, audit fields
+ * (super admin only)
+ */
+exports.updateBillById = async (id, updateData, user) => {
     const bill = await Bill.findById(id);
-    if (!bill) throw new Error('Bill not found');
+    if (!bill) return null;
+
+    // Step 1: Restore old stock for each product in bill
+    for (const oldP of bill.products) {
+        const prod = await Product.findById(oldP.productId);
+        if (prod) {
+            prod.quantity += oldP.quantity;
+            await prod.save();
+        }
+    }
+
+    // Step 2: Validate and apply new products
+    let totalAmount = 0, profit = 0, newProductsArray = [];
+    for (const newP of updateData.products) {
+        const prod = await Product.findById(newP.productId);
+        if (!prod) throw new Error(`Product not found: ${newP.productId}`);
+        if (prod.productType !== 'normal') throw new Error('Only normal products allowed');
+        if (prod.quantity < newP.quantity)
+            throw new Error(`Insufficient stock for product: ${prod.name}`);
+        const itemProfit = (newP.billedPrice - prod.buyingPrice) * newP.quantity;
+        profit += itemProfit;
+        totalAmount += newP.billedPrice * newP.quantity;
+        prod.quantity -= newP.quantity;
+        await prod.save();
+
+        newProductsArray.push({
+            productId: prod._id,
+            name: prod.name,
+            quantity: newP.quantity,
+            billedPrice: newP.billedPrice,
+            actualCost: prod.buyingPrice
+        });
+    }
+
+    // Step 3: Update bill fields
+    bill.products = newProductsArray;
+    bill.totalAmount = totalAmount;
+    bill.profit = profit;
+    bill.updatedBy = user.id;
+    bill.updatedByName = user.firstName;
+    bill.updatedAt = toSLTime(Date.now());
+    await bill.save();
     return bill;
 };
 
 /**
- * Edit bill (super admin only)
+ * Delete bill (super admin only): restore all product stock
  */
-exports.editBill = async (id, data, user) => {
-    if (!mongoose.Types.ObjectId.isValid(id)) throw new Error('Invalid bill ID');
-    const bill = await Bill.findByIdAndUpdate(
-        id,
-        { ...data, updatedBy: user.id, updatedByName: user.firstName },
-        { new: true }
-    );
-    if (!bill) throw new Error('Bill not found');
-    logger.userAction(`[${new Date().toISOString()}] ACTION: editBill by ${user.role} ${user.firstName} (ID: ${user.id}) - Status: SUCCESS - Bill ID: ${bill._id}`);
-    return bill;
-};
+exports.deleteBillById = async (id, user) => {
+    const bill = await Bill.findById(id);
+    if (!bill) return null;
 
-/**
- * Delete bill (super admin only)
- */
-exports.deleteBill = async (id, user) => {
-    if (!mongoose.Types.ObjectId.isValid(id)) throw new Error('Invalid bill ID');
-    const bill = await Bill.findByIdAndDelete(id);
-    if (!bill) throw new Error('Bill not found');
-    logger.userAction(`[${new Date().toISOString()}] ACTION: deleteBill by ${user.role} ${user.firstName} (ID: ${user.id}) - Status: SUCCESS - Bill ID: ${id}`);
-    return bill;
+    // Restore product quantities
+    for (const p of bill.products) {
+        const prod = await Product.findById(p.productId);
+        if (prod) {
+            prod.quantity += p.quantity;
+            await prod.save();
+        }
+    }
+
+    await Bill.deleteOne({ _id: id });
+    return true;
 };
