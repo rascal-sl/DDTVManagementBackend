@@ -131,13 +131,18 @@ exports.editStatusHistory = async (id, statusIndex, data, user) => {
 exports.deleteStatusHistory = async (id, statusIndex, user) => {
     const repair = await Repair.findById(id);
     if (!repair) throw new Error('Repair not found');
-    if (!repair.statusHistory[statusIndex]) throw new Error('Status entry not found');
-    repair.statusHistory[statusIndex].isDeleted = true;
-    repair.statusHistory[statusIndex].deletedBy = user.id;
-    repair.statusHistory[statusIndex].deletedAt = toSLTime(Date.now());
+
+    if (statusIndex < 0 || statusIndex >= repair.statusHistory.length) {
+        throw new Error('Status entry not found');
+    }
+
+    // Permanently remove the item
+    repair.statusHistory.splice(statusIndex, 1);
+
     repair.updatedBy = user.id;
     repair.updatedByName = user.firstName;
     repair.updatedAt = toSLTime(Date.now());
+
     await repair.save();
     return repair;
 };
