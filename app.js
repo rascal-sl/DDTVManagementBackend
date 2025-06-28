@@ -12,7 +12,28 @@ dotenv.config();
 
 const app = express();
 
-app.use(cors());
+// UPDATED CORS CONFIGURATION - ONLY CHANGE THIS PART
+app.use(cors({
+    origin: true, // Allow all origins
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: [
+        'Accept',
+        'Authorization',
+        'Cache-Control',
+        'Content-Type',
+        'DNT',
+        'If-Modified-Since',
+        'Keep-Alive',
+        'Origin',
+        'User-Agent',
+        'X-Requested-With'
+    ]
+}));
+
+// Handle preflight OPTIONS requests
+app.options('*', cors());
+
 app.use(express.json());
 app.use(logger);
 
